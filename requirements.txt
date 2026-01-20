@@ -1,0 +1,5 @@
+ python-telegram-bot
+flask 
+flask-sqlalchemy
+flask-cors 
+requests
