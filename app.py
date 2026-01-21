@@ -1,4 +1,3 @@
-# app.py
 from telegram import Update, Bot
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
