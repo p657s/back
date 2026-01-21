@@ -1,8 +1,10 @@
+# app.py - VERSIÓN CORREGIDA
 from telegram import Update, Bot
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 import os
+import asyncio
 
 # Variables de entorno
 TOKEN_BOT = os.getenv('TELEGRAM_TOKEN')
@@ -34,6 +36,19 @@ class Suscriptor(db.Model):
 with app.app_context():
     db.create_all()
 
+# Función helper para enviar mensajes de forma síncrona
+def send_telegram_message(chat_id, text, parse_mode=None):
+    """Envía mensaje a Telegram de forma síncrona"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode))
+        loop.close()
+        return True
+    except Exception as e:
+        print(f"Error enviando mensaje: {e}")
+        return False
+
 # ========== WEBHOOK TELEGRAM ==========
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -54,14 +69,14 @@ def webhook():
                     if not suscriptor.activo:
                         suscriptor.activo = True
                         db.session.commit()
-                        bot.send_message(chat_id, "✅ Suscripción reactivada!")
+                        send_telegram_message(chat_id, "✅ Suscripción reactivada!")
                     else:
-                        bot.send_message(chat_id, "✅ Ya estás suscrito!")
+                        send_telegram_message(chat_id, "✅ Ya estás suscrito!")
                 else:
                     nuevo = Suscriptor(chat_id=chat_id, username=username, nombre=nombre)
                     db.session.add(nuevo)
                     db.session.commit()
-                    bot.send_message(
+                    send_telegram_message(
                         chat_id,
                         f"✅ ¡Bienvenido {nombre}!\n\n"
                         "Te has suscrito correctamente.\n"
@@ -74,17 +89,17 @@ def webhook():
                 if suscriptor and suscriptor.activo:
                     suscriptor.activo = False
                     db.session.commit()
-                    bot.send_message(chat_id, "❌ Suscripción cancelada.")
+                    send_telegram_message(chat_id, "❌ Suscripción cancelada.")
                 else:
-                    bot.send_message(chat_id, "No estás suscrito.")
+                    send_telegram_message(chat_id, "No estás suscrito.")
             
             elif command == '/status':
                 suscriptor = Suscriptor.query.filter_by(chat_id=chat_id).first()
                 total = Suscriptor.query.filter_by(activo=True).count()
                 if suscriptor and suscriptor.activo:
-                    bot.send_message(chat_id, f"✅ Estado: Activo\n👥 Total: {total}")
+                    send_telegram_message(chat_id, f"✅ Estado: Activo\n👥 Total: {total}")
                 else:
-                    bot.send_message(chat_id, "❌ No estás suscrito. Usa /start")
+                    send_telegram_message(chat_id, "❌ No estás suscrito. Usa /start")
         
         return jsonify({'ok': True})
     except Exception as e:
@@ -112,15 +127,8 @@ def enviar_a_suscriptores():
         enviados = 0
         
         for suscriptor in suscriptores:
-            try:
-                bot.send_message(
-                    chat_id=suscriptor.chat_id,
-                    text=mensaje,
-                    parse_mode='Markdown'
-                )
+            if send_telegram_message(suscriptor.chat_id, mensaje, parse_mode='Markdown'):
                 enviados += 1
-            except:
-                pass
         
         return jsonify({
             'success': True,
@@ -128,6 +136,7 @@ def enviar_a_suscriptores():
             'total_suscriptores': len(suscriptores)
         })
     except Exception as e:
+        print(f"Error en /api/enviar: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/suscriptores', methods=['GET'])
@@ -147,3 +156,4 @@ def health():
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+
